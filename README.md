@@ -45,9 +45,22 @@ Starts 30 instances of `overflowDemo`; each emits 1 + 5 = 6 async jobs.
 
 | Source | What it shows |
 |---|---|
-| `app.log` | `BATCH SUBMITTED/START/DONE/REJECTED` per batch + `JOBEXECUTOR QUEUE OVERFLOW` block on every reject |
-| `logs/jobmonitor*.json` | same events as structured JSON |
+| `app.log` | `BATCH SUBMITTED/START/DONE/REJECTED` per batch, `ACTIVITY START/END` per activity (with `job`, `pi`, `activity`, `thread`, `durationMs`), `JOBEXECUTOR QUEUE OVERFLOW` block on every reject |
+| `logs/jobmonitor*.json` | same events as structured JSON, MDC fields (`jobId`, `processInstanceId`, `activityId`, `batchId`) as separate keys |
 | `GET /actuator/prometheus` | Spring Actuator: `executor_active_threads`, `executor_queued_tasks`, `executor_queue_remaining_tasks`, `executor_pool_size_threads`, … (tag `name="camundaTaskExecutor"`) |
+
+### "Which activity is hanging?" — three angles
+
+1. **Per-activity logs.** Every activity emits an `ACTIVITY START` and
+   matching `ACTIVITY END`. A thread that wrote `ACTIVITY START` and
+   never the matching `END` is your culprit. Filter by thread name
+   or by `activity=` to spot it.
+2. **Overflow block.** When the queue rejects, the `JOBEXECUTOR QUEUE
+   OVERFLOW` block prints the full thread → activity/PI table with
+   `ageMs` per running activity.
+3. **MDC.** Anything a delegate logs while running carries `jobId`,
+   `processInstanceId`, `activityId` — filter your log aggregator by
+   `pi=<id>` to follow one process instance across all worker threads.
 
 ## What the overflow block tells you
 

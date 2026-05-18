@@ -16,6 +16,8 @@ import org.cibseven.bpm.engine.impl.pvm.process.ActivityImpl;
 import org.cibseven.bpm.engine.impl.pvm.process.ScopeImpl;
 import org.cibseven.bpm.engine.impl.util.xml.Element;
 import org.cibseven.bpm.spring.boot.starter.util.SpringBootProcessEnginePlugin;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 
@@ -88,6 +90,8 @@ public class JobMonitorPlugin extends SpringBootProcessEnginePlugin {
 
   /** Fired by every activity start/end. Updates MDC and the static map. */
   static class TrackingListener implements ExecutionListener {
+    private static final Logger LOG = LoggerFactory.getLogger(TrackingListener.class);
+
     @Override public void notify(DelegateExecution e) {
       String thread = Thread.currentThread().getName();
       if (EVENTNAME_START.equals(e.getEventName())) {
@@ -96,13 +100,20 @@ public class JobMonitorPlugin extends SpringBootProcessEnginePlugin {
         String jobId = job == null ? null : job.getId();
         String pi = e.getProcessInstanceId();
         String act = e.getCurrentActivityId();
-        CURRENT.put(thread, String.format("job=%s pi=%s activity=%s startedAt=%d",
-            jobId, pi, act, System.currentTimeMillis()));
+        long now = System.currentTimeMillis();
+        CURRENT.put(thread, String.format("job=%s pi=%s activity=%s startedAt=%d", jobId, pi, act, now));
         if (jobId != null) MDC.put("jobId", jobId);
         MDC.put("processInstanceId", pi);
         MDC.put("activityId", act);
+        LOG.info("ACTIVITY START  job={} pi={} activity={} thread={}", jobId, pi, act, thread);
       } else if (EVENTNAME_END.equals(e.getEventName())) {
-        CURRENT.remove(thread);
+        String prev = CURRENT.remove(thread);
+        long startedAt = prev != null && prev.contains("startedAt=")
+            ? Long.parseLong(prev.substring(prev.lastIndexOf("startedAt=") + "startedAt=".length()))
+            : System.currentTimeMillis();
+        LOG.info("ACTIVITY END    pi={} activity={} thread={} durationMs={}",
+            e.getProcessInstanceId(), e.getCurrentActivityId(), thread,
+            System.currentTimeMillis() - startedAt);
         MDC.remove("jobId");
         MDC.remove("processInstanceId");
         MDC.remove("activityId");
