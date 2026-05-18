@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_overflow"
+                  targetNamespace="http://example.org/jobmonitor">
+
+  <!--
+    Demo process designed to overflow the queue:
+
+      start  →  prepare (async-before, "short")
+                  │
+                  ▼
+                fork (Parallel Gateway)
+              /   |   \   \   \
+            b1   b2   b3  b4  b5     (all ServiceTasks are async-before,
+              \   |   /   /   /       so each produces its own job in the
+                join                  DB. 1 + 5 = 6 jobs per PI.)
+                  │
+                  ▼
+                end
+
+    With e.g. 50 process instances and pool=3 / queue=5 / maxJobsPerAcq=3:
+      - 50 "prepare" jobs are immediately acquireable
+      - JobExecutor grabs batches of 3, queue holds up to 5; everything
+        beyond → RejectedExecutionException → LoggingRejectedJobsHandler
+        logs the full state and unlocks the jobs
+      - Once "prepare" completes each PI fires 5 more jobs into the pool
+        → even more overflow pressure.
+  -->
+
+  <bpmn:process id="overflowDemo" name="Overflow Demo" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="Start"/>
+    <bpmn:sequenceFlow id="f0" sourceRef="start" targetRef="prepare"/>
+
+    <bpmn:serviceTask id="prepare" name="prepare"
+                      camunda:delegateExpression="${slowDelegate}"
+                      camunda:asyncBefore="true"
+                      camunda:exclusive="true"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="prepare" targetRef="fork"/>
+
+    <bpmn:parallelGateway id="fork" name="fork"/>
+    <bpmn:sequenceFlow id="ff1" sourceRef="fork" targetRef="branch1"/>
+    <bpmn:sequenceFlow id="ff2" sourceRef="fork" targetRef="branch2"/>
+    <bpmn:sequenceFlow id="ff3" sourceRef="fork" targetRef="branch3"/>
+    <bpmn:sequenceFlow id="ff4" sourceRef="fork" targetRef="branch4"/>
+    <bpmn:sequenceFlow id="ff5" sourceRef="fork" targetRef="branch5"/>
+
+    <bpmn:serviceTask id="branch1" name="branch-1"
+                      camunda:delegateExpression="${slowDelegate}"
+                      camunda:asyncBefore="true"/>
+    <bpmn:serviceTask id="branch2" name="branch-2"
+                      camunda:delegateExpression="${slowDelegate}"
+                      camunda:asyncBefore="true"/>
+    <bpmn:serviceTask id="branch3" name="branch-3"
+                      camunda:delegateExpression="${slowDelegate}"
+                      camunda:asyncBefore="true"/>
+    <bpmn:serviceTask id="branch4" name="branch-4"
+                      camunda:delegateExpression="${slowDelegate}"
+                      camunda:asyncBefore="true"/>
+    <bpmn:serviceTask id="branch5" name="branch-5"
+                      camunda:delegateExpression="${slowDelegate}"
+                      camunda:asyncBefore="true"/>
+
+    <bpmn:sequenceFlow id="fj1" sourceRef="branch1" targetRef="join"/>
+    <bpmn:sequenceFlow id="fj2" sourceRef="branch2" targetRef="join"/>
+    <bpmn:sequenceFlow id="fj3" sourceRef="branch3" targetRef="join"/>
+    <bpmn:sequenceFlow id="fj4" sourceRef="branch4" targetRef="join"/>
+    <bpmn:sequenceFlow id="fj5" sourceRef="branch5" targetRef="join"/>
+
+    <bpmn:parallelGateway id="join" name="join"/>
+    <bpmn:sequenceFlow id="fe" sourceRef="join" targetRef="end"/>
+
+    <bpmn:endEvent id="end" name="End"/>
+
+  </bpmn:process>
+</bpmn:definitions>

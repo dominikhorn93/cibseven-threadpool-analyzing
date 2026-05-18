@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="true" scanPeriod="30 seconds">
+
+  <!--
+    Two appenders:
+      - console:  human-readable, MDC fields in the pattern so a tail
+                  immediately shows which thread is working on which
+                  PI/activity/job.
+      - json:     structured JSON (logstash encoder) for ingest into
+                  Loki/ELK. Rolling file. Comment out if unused.
+  -->
+
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %X{jobId:-} %X{processInstanceId:-} %X{activityId:-} %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <appender name="JSON" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>logs/jobmonitor.json</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+      <fileNamePattern>logs/jobmonitor-%d{yyyy-MM-dd}.%i.json</fileNamePattern>
+      <maxFileSize>50MB</maxFileSize>
+      <maxHistory>7</maxHistory>
+      <totalSizeCap>500MB</totalSizeCap>
+    </rollingPolicy>
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <includeMdcKeyName>jobId</includeMdcKeyName>
+      <includeMdcKeyName>processInstanceId</includeMdcKeyName>
+      <includeMdcKeyName>processDefinitionKey</includeMdcKeyName>
+      <includeMdcKeyName>activityId</includeMdcKeyName>
+      <includeMdcKeyName>businessKey</includeMdcKeyName>
+      <includeMdcKeyName>batchId</includeMdcKeyName>
+      <customFields>{"app":"cibseven-jobexecutor-demo"}</customFields>
+    </encoder>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="JSON"/>
+  </root>
+
+</configuration>

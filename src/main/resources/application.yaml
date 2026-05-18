@@ -1,0 +1,67 @@
+camunda.bpm:
+  admin-user:
+    id: demo
+    password: demo
+    firstName: Demo
+  filter:
+    create: All tasks
+  generic-properties:
+    properties:
+      historyTimeToLive: P30D
+
+  # Deliberately small so the demo's queue overflows quickly.
+  # Tune up in production. Values are picked up by our
+  # InstrumentedSpringJobExecutor / InstrumentedTaskExecutor.
+  job-execution:
+    enabled: true
+    deployment-aware: false
+    core-pool-size: 3
+    max-pool-size: 3
+    queue-capacity: 5
+    keep-alive-seconds: 60
+    max-jobs-per-acquisition: 3
+    lock-time-in-millis: 300000
+    wait-time-in-millis: 5000
+
+spring:
+  config:
+    import:
+      - optional:classpath:cibseven-webclient.properties
+
+# Actuator: expose Prometheus and everything else so demo mode shows
+# everything. Restrict in production.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: cibseven-jobexecutor-demo
+
+# Our own monitoring properties
+jobmonitor:
+  snapshot-log-interval-seconds: 5
+  log-job-lifecycle: true
+  # Size of the ring buffer that holds recently completed / rejected
+  # batches. Queryable via REST.
+  history-ring-size: 200
+
+cibseven:
+  webclient:
+    services:
+      basePath: services/v1
+    engineRest:
+      url: http://localhost:8080
+
+logging:
+  level:
+    root: INFO
+    org.cibseven.getstarted.jobmonitor: DEBUG
+    # Raise the engine-internal jobexecutor logger to DEBUG to see
+    # acquisition, lock renewal and job failures.
+    org.cibseven.bpm.engine.jobexecutor: DEBUG
+    org.cibseven.bpm.engine.context: INFO
