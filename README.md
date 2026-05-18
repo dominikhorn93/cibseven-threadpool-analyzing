@@ -2,21 +2,11 @@
 
 Spring Boot demo (based on
 [`cibseven-get-started-spring-boot`](https://github.com/cibseven/cibseven-get-started-spring-boot))
-that makes the JobExecutor observable in three files:
+that turns the JobExecutor inside-out: every batch, every activity,
+every overflow becomes a log line tagged with `thread`, `jobId`,
+`processInstanceId`, `activityId`. ~350 LOC in three Java files.
 
-- `JobMonitoring.java` — instrumented `SpringJobExecutor` + `TaskExecutor`
-  + `RejectedJobsHandler` (~170 LOC, one `@Configuration`).
-- `JobMonitorPlugin.java` — `ProcessEnginePlugin` that attaches an
-  `ExecutionListener` to every BPMN activity so each worker thread
-  can be tagged with the current job / PI / activity (~110 LOC).
-- `JobMonitorApplication.java` — boot main + `SlowDelegate` + load
-  generator endpoint (~55 LOC).
-
-Spring Actuator picks up the `camundaTaskExecutor` bean automatically
-and exposes the standard `executor_*` metrics — no separate
-`MeterBinder` needed.
-
-## Run it
+## Run
 
 ```bash
 brew install openjdk@17 maven
@@ -29,40 +19,46 @@ mvn -DskipTests package
 java -jar target/jobexecutor-observability-0.0.1-SNAPSHOT.jar
 ```
 
-`http://localhost:8080`, login `demo / demo`. The pool is intentionally
-tiny in `application.yaml` (`pool=3`, `queue=5`,
-`max-jobs-per-acquisition=3`) so the demo overflows fast.
+App at `http://localhost:8080`, login `demo / demo`.
+Pool is intentionally tiny (`pool=3`, `queue=5` in `application.yaml`)
+so the overflow scenario hits in seconds.
 
-## Trigger an overflow
+## Test it
 
 ```bash
+# Light load — workers run normally, you see per-activity tracking
+curl -X POST 'http://localhost:8080/demo/overflow?count=3&sleepMs=2000'
+
+# Heavy load — queue overflows, rejection diagnostic kicks in
 curl -X POST 'http://localhost:8080/demo/overflow?count=30&sleepMs=4000'
 ```
 
-Starts 30 instances of `overflowDemo`; each emits 1 + 5 = 6 async jobs.
+Watch the console output (or `logs/jobmonitor.json`).
 
-## Where to look
+## What you see
 
-| Source | What it shows |
-|---|---|
-| `app.log` | `BATCH SUBMITTED/START/DONE/REJECTED` per batch, `ACTIVITY START/END` per activity (with `job`, `pi`, `activity`, `thread`, `durationMs`), `JOBEXECUTOR QUEUE OVERFLOW` block on every reject |
-| `logs/jobmonitor*.json` | same events as structured JSON, MDC fields (`jobId`, `processInstanceId`, `activityId`, `batchId`) as separate keys |
-| `GET /actuator/prometheus` | Spring Actuator: `executor_active_threads`, `executor_queued_tasks`, `executor_queue_remaining_tasks`, `executor_pool_size_threads`, … (tag `name="camundaTaskExecutor"`) |
+**1. Every BPMN activity logs start + end with full context:**
 
-### "Which activity is hanging?" — three angles
+```
+[jobExecutor-1] job=8aee… pi=8aebf2… prepare  ACTIVITY START  job=8aee… pi=8aebf2… activity=prepare thread=jobExecutor-1
+[jobExecutor-1] job=8aee… pi=8aebf2… prepare  ACTIVITY END    pi=8aebf2… activity=prepare thread=jobExecutor-1 durationMs=2003
+```
 
-1. **Per-activity logs.** Every activity emits an `ACTIVITY START` and
-   matching `ACTIVITY END`. A thread that wrote `ACTIVITY START` and
-   never the matching `END` is your culprit. Filter by thread name
-   or by `activity=` to spot it.
-2. **Overflow block.** When the queue rejects, the `JOBEXECUTOR QUEUE
-   OVERFLOW` block prints the full thread → activity/PI table with
-   `ageMs` per running activity.
-3. **MDC.** Anything a delegate logs while running carries `jobId`,
-   `processInstanceId`, `activityId` — filter your log aggregator by
-   `pi=<id>` to follow one process instance across all worker threads.
+→ A thread that wrote `ACTIVITY START` but no matching `ACTIVITY END`
+is your hanger. Grep by `thread=`, `activity=`, or `pi=`.
 
-## What the overflow block tells you
+**2. Every job batch logs its lifecycle through the TaskExecutor:**
+
+```
+BATCH SUBMITTED batchId=12ab jobs=3 jobIds=[8af43062-…, 8af43063-…, 8af43064-…]
+BATCH START     batchId=12ab jobs=3 thread=jobExecutor-1 waitMs=4
+BATCH DONE      batchId=12ab jobs=3 thread=jobExecutor-1 execMs=6012
+```
+
+→ Compare `waitMs` (time spent in the Spring queue) with `execMs`. A
+big `waitMs` means workers are slower than acquisition pushes.
+
+**3. On every queue overflow, a full diagnostic block:**
 
 ```
 JOBEXECUTOR QUEUE OVERFLOW
@@ -78,53 +74,66 @@ Currently running (thread -> activity/PI):
   - jobExecutor-3  job=8af05fab-… pi=8af03897-… activity=prepare ageMs=18
 ```
 
-- `pool active=max` + `queue=full` → genuine saturation.
-- `highWater` survives even if the pool looks relaxed later.
-- The **Currently running** table tells you which activity holds each
-  worker — high `ageMs` on the same activity across all workers
-  identifies the bottleneck.
+→ The `Currently running` table identifies the bottleneck activity at
+the moment of rejection. Rejected jobs are auto-unlocked for the next
+acquisition cycle.
 
-After logging, the handler unlocks the rejected jobs so the next
-acquisition cycle retries them (same behaviour as the default
-`NotifyAcquisitionRejectedJobsHandler`).
+**4. Pool / queue metrics for Prometheus:**
 
-## How to drop this into your own project
+```bash
+curl -s http://localhost:8080/actuator/prometheus | grep '^executor_'
+```
 
-Copy the three Java files into your package and a Logback pattern that
-includes the MDC keys:
+```
+executor_active_threads{name="camundaTaskExecutor"}          3.0
+executor_queued_tasks{name="camundaTaskExecutor"}            5.0
+executor_queue_remaining_tasks{name="camundaTaskExecutor"}   0.0
+executor_pool_size_threads{name="camundaTaskExecutor"}       3.0
+```
+
+→ Auto-bound by Spring Actuator; no custom MeterBinder needed.
+
+## Files
+
+```
+src/main/java/org/cibseven/getstarted/jobmonitor/
+├── JobMonitoring.java          @Configuration + TaskExecutor +
+│                               SpringJobExecutor + RejectedJobsHandler
+├── JobMonitorPlugin.java       ProcessEnginePlugin attaching an
+│                               ExecutionListener to every activity
+└── JobMonitorApplication.java  boot main, SlowDelegate, /demo/overflow
+```
+
+## Use it in your own project
+
+Copy the three files; the `@Configuration` overrides the cibseven
+starter's `camundaTaskExecutor` and `jobExecutor` beans (both
+`@ConditionalOnMissingBean`), so wiring is automatic. The logback
+pattern in `logback-spring.xml` renders the MDC keys — pick it up
+or merge it with yours:
 
 ```xml
 <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %X{jobId:-} %X{processInstanceId:-} %X{activityId:-} %logger{36} - %msg%n</pattern>
 ```
 
-The `JobMonitoring` `@Configuration` overrides the two
-`@ConditionalOnMissingBean` beans the cibseven-bpm-spring-boot starter
-provides (`camundaTaskExecutor` and `jobExecutor`), so the wiring is
-automatic.
-
-## Things to watch when adapting (CIB seven 2.1.0)
+## Gotchas adapting to CIB seven 2.1.0
 
 1. `SpringBootProcessEnginePlugin` lives in
    `org.cibseven.bpm.spring.boot.starter.util` (not `.plugin`).
-2. `JobExecutor.executeJobs(...)` is **public** — match it on the override.
-3. `@Bean` methods returning an interface hide the concrete type from
-   the autowiring resolver. Declare the concrete subtype if other
-   beans need to inject it directly.
-4. Spring's `taskScheduler` (from `@EnableScheduling`) also implements
-   `TaskExecutor` — disambiguate by concrete type when injecting.
-5. `cibseven-webclient` requires a base64 JWT secret ≥ 155 chars
-   (`BaseUserProvider.checkKey`). The placeholder in
-   `cibseven-webclient.properties` is for local testing only;
-   regenerate: `openssl rand -base64 130 | tr -d '\n'`.
-6. Process Engine since 7.16 requires a default `historyTimeToLive`:
+2. `JobExecutor.executeJobs(...)` is **public** — match the visibility.
+3. `cibseven-webclient` needs a base64 JWT secret ≥ 155 chars
+   (`BaseUserProvider.checkKey`). The value in
+   `cibseven-webclient.properties` is for local use only; regenerate:
+   `openssl rand -base64 130 | tr -d '\n'`.
+4. Engine since 7.16 requires a default `historyTimeToLive`:
    `camunda.bpm.generic-properties.properties.historyTimeToLive: P30D`.
-7. Spring MVC `@RequestParam(defaultValue=...)` without explicit name
-   needs `<parameters>true</parameters>` on the `maven-compiler-plugin`.
+5. `@RequestParam(defaultValue=...)` without explicit name needs
+   `<parameters>true</parameters>` on the `maven-compiler-plugin`.
 
 ## Tuning hint
 
 Don't fix overflow by growing the pool — find the activity that holds
-a worker for too long (`ageMs` in the **Currently running** table).
-Larger pools mostly add lock contention. Lowering
-`max-jobs-per-acquisition` makes the `RejectedJobsHandler` regulate
-load earlier (it unlocks immediately).
+a worker for too long (`durationMs` in `ACTIVITY END`, or `ageMs` in
+the overflow block). Larger pools mostly add lock contention.
+Lowering `max-jobs-per-acquisition` makes the `RejectedJobsHandler`
+regulate load earlier (it unlocks immediately).
