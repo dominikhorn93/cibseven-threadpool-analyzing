@@ -4,7 +4,10 @@ Spring Boot demo (based on
 [`cibseven-get-started-spring-boot`](https://github.com/cibseven/cibseven-get-started-spring-boot))
 that turns the JobExecutor inside-out: every batch, every activity,
 every overflow becomes a log line tagged with `thread`, `jobId`,
-`processInstanceId`, `activityId`. ~350 LOC in three Java files.
+`processInstanceId`, `activityId`. ~315 LOC in three Java files —
+the per-activity hook uses the cibseven starter's built-in
+`EventPublisherPlugin` (`@EventListener(ExecutionEvent)`), so no
+custom `BpmnParseListener` boilerplate.
 
 ## Run
 
@@ -99,8 +102,9 @@ executor_pool_size_threads{name="camundaTaskExecutor"}       3.0
 src/main/java/org/cibseven/getstarted/jobmonitor/
 ├── JobMonitoring.java          @Configuration + TaskExecutor +
 │                               SpringJobExecutor + RejectedJobsHandler
-├── JobMonitorPlugin.java       ProcessEnginePlugin attaching an
-│                               ExecutionListener to every activity
+├── ActivityTracker.java        @EventListener(ExecutionEvent) — picks
+│                               up the events the starter's
+│                               EventPublisherPlugin already publishes
 └── JobMonitorApplication.java  boot main, SlowDelegate, /demo/overflow
 ```
 
@@ -118,9 +122,12 @@ or merge it with yours:
 
 ## Gotchas adapting to CIB seven 2.1.0
 
-1. `SpringBootProcessEnginePlugin` lives in
-   `org.cibseven.bpm.spring.boot.starter.util` (not `.plugin`).
-2. `JobExecutor.executeJobs(...)` is **public** — match the visibility.
+1. `JobExecutor.executeJobs(...)` is **public** — match the visibility
+   on the override.
+2. The activity event hook uses
+   `org.cibseven.bpm.spring.boot.starter.event.ExecutionEvent`. The
+   starter's `EventPublisherPlugin` publishes it automatically; defaults
+   for `camunda.bpm.eventing.execution/task/history` are all `true`.
 3. `cibseven-webclient` needs a base64 JWT secret ≥ 155 chars
    (`BaseUserProvider.checkKey`). The value in
    `cibseven-webclient.properties` is for local use only; regenerate:

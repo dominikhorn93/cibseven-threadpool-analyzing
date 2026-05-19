@@ -159,7 +159,7 @@ public class JobMonitoring {
           te.getQueueSize(), te.getQueueCapacity(), te.getQueueRemaining(),
           te.getQueueHwm(), te.getActiveHwm(),
           te.getRejected(),
-          JobMonitorPlugin.currentlyRunning());
+          ActivityTracker.currentlyRunning());
 
       // Unlock so the next acquisition cycle retries them — same as the
       // default NotifyAcquisitionRejectedJobsHandler does.
