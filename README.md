@@ -40,15 +40,25 @@ Watch the console output (or `logs/jobmonitor.json`).
 
 ## What you see
 
-**1. Every BPMN activity logs start + end with full context:**
+**1. Every BPMN activity logs start + end with full context (DEBUG):**
 
 ```
-[jobExecutor-1] job=8aee… pi=8aebf2… prepare  ACTIVITY START  job=8aee… pi=8aebf2… activity=prepare thread=jobExecutor-1
-[jobExecutor-1] job=8aee… pi=8aebf2… prepare  ACTIVITY END    pi=8aebf2… activity=prepare thread=jobExecutor-1 durationMs=2003
+DEBUG [jobExecutor-3] … ACTIVITY START job=4de1844f-… pi=4de15d3b-… activity=prepare thread=jobExecutor-3
+DEBUG [jobExecutor-3] … Currently running (3):
+  - jobExecutor-1  job=4ddf8873-… pi=4ddcf05f-… activity=prepare ageMs=5
+  - jobExecutor-2  job=4de0e809-… pi=4de0c0f5-… activity=prepare ageMs=5
+  - jobExecutor-3  job=4de1844f-… pi=4de15d3b-… activity=prepare ageMs=0
+DEBUG [jobExecutor-3] … ACTIVITY END   pi=4de15d3b-… activity=prepare thread=jobExecutor-3 durationMs=2003
 ```
 
-→ A thread that wrote `ACTIVITY START` but no matching `ACTIVITY END`
-is your hanger. Grep by `thread=`, `activity=`, or `pi=`.
+→ Each activity event is followed by the **full snapshot of everything
+currently in flight** — you can read the state at any timestamp without
+waiting for a rejection. A thread that emits `ACTIVITY START` and never
+the matching `END` is your hanger.
+
+> Logger: `org.cibseven.getstarted.jobmonitor` at `DEBUG` (already set in
+> `application.yaml`). In production raise it to `INFO` and this channel
+> goes silent — the overflow diagnostic (ERROR) still fires.
 
 **2. Every job batch logs its lifecycle through the TaskExecutor:**
 

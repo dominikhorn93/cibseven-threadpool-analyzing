@@ -49,14 +49,20 @@ public class ActivityTracker {
       if (jobId != null) MDC.put("jobId", jobId);
       MDC.put("processInstanceId", pi);
       MDC.put("activityId", act);
-      LOG.info("ACTIVITY START  job={} pi={} activity={} thread={}", jobId, pi, act, thread);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("ACTIVITY START  job={} pi={} activity={} thread={}", jobId, pi, act, thread);
+        LOG.debug("Currently running ({}):\n{}", CURRENT.size(), currentlyRunning());
+      }
 
     } else if ("end".equals(event)) {
       String prev = CURRENT.remove(thread);
       long startedAt = parseStartedAt(prev);
-      LOG.info("ACTIVITY END    pi={} activity={} thread={} durationMs={}",
-          e.getProcessInstanceId(), e.getCurrentActivityId(), thread,
-          System.currentTimeMillis() - startedAt);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("ACTIVITY END    pi={} activity={} thread={} durationMs={}",
+            e.getProcessInstanceId(), e.getCurrentActivityId(), thread,
+            System.currentTimeMillis() - startedAt);
+        LOG.debug("Currently running ({}):\n{}", CURRENT.size(), currentlyRunning());
+      }
       MDC.remove("jobId");
       MDC.remove("processInstanceId");
       MDC.remove("activityId");

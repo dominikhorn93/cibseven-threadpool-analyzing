@@ -139,7 +139,6 @@ public class JobMonitoring {
     private final AtomicLong totalRejected = new AtomicLong();
 
     public LoggingRejectedJobsHandler(InstrumentedTaskExecutor te) { this.te = te; }
-    public long getTotalRejected() { return totalRejected.get(); }
 
     @Override
     public void jobsRejected(List<String> jobIds, ProcessEngineImpl engine, JobExecutor je) {
