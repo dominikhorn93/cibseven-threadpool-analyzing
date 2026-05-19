@@ -15,7 +15,6 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * Boot main + the bare-bones demo bits (slow delegate, load generator).
  * Wiring of the JobExecutor instrumentation lives in {@link JobMonitoring}
- * and {@link JobMonitorPlugin}.
  */
 @SpringBootApplication
 @EnableProcessApplication

@@ -11,39 +11,41 @@
   <!--
     Demo process designed to overflow the queue:
 
-      start  →  prepare (async-before, "short")
-                  │
-                  ▼
-                fork (Parallel Gateway)
-              /   |   \   \   \
-            b1   b2   b3  b4  b5     (all ServiceTasks are async-before,
-              \   |   /   /   /       so each produces its own job in the
-                join                  DB. 1 + 5 = 6 jobs per PI.)
-                  │
-                  ▼
-                end
+      start  →  prepare (async-before, "short")  →  fork
+                                                     ├── branch-1 (async-before)
+                                                     ├── branch-2 (async-before)
+                                                     ├── branch-3 (async-before)  →  join  →  end
+                                                     ├── branch-4 (async-before)
+                                                     └── branch-5 (async-before)
 
-    With e.g. 50 process instances and pool=3 / queue=5 / maxJobsPerAcq=3:
-      - 50 "prepare" jobs are immediately acquireable
-      - JobExecutor grabs batches of 3, queue holds up to 5; everything
-        beyond → RejectedExecutionException → LoggingRejectedJobsHandler
-        logs the full state and unlocks the jobs
-      - Once "prepare" completes each PI fires 5 more jobs into the pool
-        → even more overflow pressure.
+    Each PI emits 1 + 5 = 6 async jobs. With e.g. 50 process instances and
+    pool=3 / queue=5 / maxJobsPerAcq=3 the queue saturates immediately.
   -->
 
   <bpmn:process id="overflowDemo" name="Overflow Demo" isExecutable="true">
 
-    <bpmn:startEvent id="start" name="Start"/>
+    <bpmn:startEvent id="start" name="Start">
+      <bpmn:outgoing>f0</bpmn:outgoing>
+    </bpmn:startEvent>
     <bpmn:sequenceFlow id="f0" sourceRef="start" targetRef="prepare"/>
 
     <bpmn:serviceTask id="prepare" name="prepare"
                       camunda:delegateExpression="${slowDelegate}"
                       camunda:asyncBefore="true"
-                      camunda:exclusive="true"/>
+                      camunda:exclusive="true">
+      <bpmn:incoming>f0</bpmn:incoming>
+      <bpmn:outgoing>f1</bpmn:outgoing>
+    </bpmn:serviceTask>
     <bpmn:sequenceFlow id="f1" sourceRef="prepare" targetRef="fork"/>
 
-    <bpmn:parallelGateway id="fork" name="fork"/>
+    <bpmn:parallelGateway id="fork" name="fork">
+      <bpmn:incoming>f1</bpmn:incoming>
+      <bpmn:outgoing>ff1</bpmn:outgoing>
+      <bpmn:outgoing>ff2</bpmn:outgoing>
+      <bpmn:outgoing>ff3</bpmn:outgoing>
+      <bpmn:outgoing>ff4</bpmn:outgoing>
+      <bpmn:outgoing>ff5</bpmn:outgoing>
+    </bpmn:parallelGateway>
     <bpmn:sequenceFlow id="ff1" sourceRef="fork" targetRef="branch1"/>
     <bpmn:sequenceFlow id="ff2" sourceRef="fork" targetRef="branch2"/>
     <bpmn:sequenceFlow id="ff3" sourceRef="fork" targetRef="branch3"/>
@@ -52,19 +54,34 @@
 
     <bpmn:serviceTask id="branch1" name="branch-1"
                       camunda:delegateExpression="${slowDelegate}"
-                      camunda:asyncBefore="true"/>
+                      camunda:asyncBefore="true">
+      <bpmn:incoming>ff1</bpmn:incoming>
+      <bpmn:outgoing>fj1</bpmn:outgoing>
+    </bpmn:serviceTask>
     <bpmn:serviceTask id="branch2" name="branch-2"
                       camunda:delegateExpression="${slowDelegate}"
-                      camunda:asyncBefore="true"/>
+                      camunda:asyncBefore="true">
+      <bpmn:incoming>ff2</bpmn:incoming>
+      <bpmn:outgoing>fj2</bpmn:outgoing>
+    </bpmn:serviceTask>
     <bpmn:serviceTask id="branch3" name="branch-3"
                       camunda:delegateExpression="${slowDelegate}"
-                      camunda:asyncBefore="true"/>
+                      camunda:asyncBefore="true">
+      <bpmn:incoming>ff3</bpmn:incoming>
+      <bpmn:outgoing>fj3</bpmn:outgoing>
+    </bpmn:serviceTask>
     <bpmn:serviceTask id="branch4" name="branch-4"
                       camunda:delegateExpression="${slowDelegate}"
-                      camunda:asyncBefore="true"/>
+                      camunda:asyncBefore="true">
+      <bpmn:incoming>ff4</bpmn:incoming>
+      <bpmn:outgoing>fj4</bpmn:outgoing>
+    </bpmn:serviceTask>
     <bpmn:serviceTask id="branch5" name="branch-5"
                       camunda:delegateExpression="${slowDelegate}"
-                      camunda:asyncBefore="true"/>
+                      camunda:asyncBefore="true">
+      <bpmn:incoming>ff5</bpmn:incoming>
+      <bpmn:outgoing>fj5</bpmn:outgoing>
+    </bpmn:serviceTask>
 
     <bpmn:sequenceFlow id="fj1" sourceRef="branch1" targetRef="join"/>
     <bpmn:sequenceFlow id="fj2" sourceRef="branch2" targetRef="join"/>
@@ -72,10 +89,130 @@
     <bpmn:sequenceFlow id="fj4" sourceRef="branch4" targetRef="join"/>
     <bpmn:sequenceFlow id="fj5" sourceRef="branch5" targetRef="join"/>
 
-    <bpmn:parallelGateway id="join" name="join"/>
+    <bpmn:parallelGateway id="join" name="join">
+      <bpmn:incoming>fj1</bpmn:incoming>
+      <bpmn:incoming>fj2</bpmn:incoming>
+      <bpmn:incoming>fj3</bpmn:incoming>
+      <bpmn:incoming>fj4</bpmn:incoming>
+      <bpmn:incoming>fj5</bpmn:incoming>
+      <bpmn:outgoing>fe</bpmn:outgoing>
+    </bpmn:parallelGateway>
     <bpmn:sequenceFlow id="fe" sourceRef="join" targetRef="end"/>
 
-    <bpmn:endEvent id="end" name="End"/>
+    <bpmn:endEvent id="end" name="End">
+      <bpmn:incoming>fe</bpmn:incoming>
+    </bpmn:endEvent>
 
   </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="diagram">
+    <bpmndi:BPMNPlane id="plane" bpmnElement="overflowDemo">
+
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="160" y="247" width="36" height="36"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="166" y="290" width="24" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="prepare_di" bpmnElement="prepare">
+        <dc:Bounds x="240" y="225" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="fork_di" bpmnElement="fork" isMarkerVisible="true">
+        <dc:Bounds x="395" y="240" width="50" height="50"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="408" y="297" width="23" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="branch1_di" bpmnElement="branch1">
+        <dc:Bounds x="500" y="20" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="branch2_di" bpmnElement="branch2">
+        <dc:Bounds x="500" y="130" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="branch3_di" bpmnElement="branch3">
+        <dc:Bounds x="500" y="225" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="branch4_di" bpmnElement="branch4">
+        <dc:Bounds x="500" y="320" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="branch5_di" bpmnElement="branch5">
+        <dc:Bounds x="500" y="430" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="join_di" bpmnElement="join" isMarkerVisible="true">
+        <dc:Bounds x="655" y="240" width="50" height="50"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="669" y="297" width="22" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="762" y="247" width="36" height="36"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="770" y="290" width="20" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="f0_di" bpmnElement="f0">
+        <di:waypoint x="196" y="265"/>
+        <di:waypoint x="240" y="265"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f1_di" bpmnElement="f1">
+        <di:waypoint x="340" y="265"/>
+        <di:waypoint x="395" y="265"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="ff1_di" bpmnElement="ff1">
+        <di:waypoint x="420" y="240"/>
+        <di:waypoint x="420" y="60"/>
+        <di:waypoint x="500" y="60"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="ff2_di" bpmnElement="ff2">
+        <di:waypoint x="420" y="240"/>
+        <di:waypoint x="420" y="170"/>
+        <di:waypoint x="500" y="170"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="ff3_di" bpmnElement="ff3">
+        <di:waypoint x="445" y="265"/>
+        <di:waypoint x="500" y="265"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="ff4_di" bpmnElement="ff4">
+        <di:waypoint x="420" y="290"/>
+        <di:waypoint x="420" y="360"/>
+        <di:waypoint x="500" y="360"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="ff5_di" bpmnElement="ff5">
+        <di:waypoint x="420" y="290"/>
+        <di:waypoint x="420" y="470"/>
+        <di:waypoint x="500" y="470"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="fj1_di" bpmnElement="fj1">
+        <di:waypoint x="600" y="60"/>
+        <di:waypoint x="680" y="60"/>
+        <di:waypoint x="680" y="240"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="fj2_di" bpmnElement="fj2">
+        <di:waypoint x="600" y="170"/>
+        <di:waypoint x="680" y="170"/>
+        <di:waypoint x="680" y="240"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="fj3_di" bpmnElement="fj3">
+        <di:waypoint x="600" y="265"/>
+        <di:waypoint x="655" y="265"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="fj4_di" bpmnElement="fj4">
+        <di:waypoint x="600" y="360"/>
+        <di:waypoint x="680" y="360"/>
+        <di:waypoint x="680" y="290"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="fj5_di" bpmnElement="fj5">
+        <di:waypoint x="600" y="470"/>
+        <di:waypoint x="680" y="470"/>
+        <di:waypoint x="680" y="290"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="fe_di" bpmnElement="fe">
+        <di:waypoint x="705" y="265"/>
+        <di:waypoint x="762" y="265"/>
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+
 </bpmn:definitions>
