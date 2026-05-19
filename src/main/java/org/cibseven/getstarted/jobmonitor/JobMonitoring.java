@@ -1,10 +1,8 @@
 package org.cibseven.getstarted.jobmonitor;
 
 import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ThreadPoolExecutor.AbortPolicy;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.cibseven.bpm.engine.impl.ProcessEngineImpl;
 import org.cibseven.bpm.engine.impl.cmd.UnlockJobCmd;
@@ -13,31 +11,27 @@ import org.cibseven.bpm.engine.impl.jobexecutor.RejectedJobsHandler;
 import org.cibseven.bpm.engine.spring.components.jobexecutor.SpringJobExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 /**
- * Single-file JobExecutor instrumentation:
+ * Overrides the two {@code @ConditionalOnMissingBean} beans the
+ * cibseven-bpm-spring-boot starter provides, so we can plug in our own
+ * {@link LoggingRejectedJobsHandler}. Otherwise everything is stock:
  *
- *   - {@link InstrumentedTaskExecutor} exposes pool/queue state and tracks
- *     high-water marks for queue size and active threads.
- *   - {@link InstrumentedSpringJobExecutor} wraps every batch handed to the
- *     TaskExecutor with `BATCH SUBMITTED/START/DONE/FAILED/REJECTED` logs
- *     including the queue wait time and execution time.
- *   - {@link LoggingRejectedJobsHandler} dumps the full pool/queue state
- *     plus the activities currently held by each worker thread
- *     ({@link JobMonitorPlugin#currentlyRunning()}) on every overflow, then
- *     unlocks the jobs so acquisition retries them.
+ *   - {@code camundaTaskExecutor} is a plain {@link ThreadPoolTaskExecutor}.
+ *     Spring Actuator binds it automatically and exposes
+ *     {@code executor_active_threads}, {@code executor_queued_tasks},
+ *     {@code executor_queue_remaining_tasks}, {@code executor_pool_size_threads}
+ *     on /actuator/prometheus.
+ *   - {@code jobExecutor} is a plain {@link SpringJobExecutor} wired with
+ *     our diagnostic rejected handler. No batch-level wrapping; per-activity
+ *     timing comes from {@link ActivityTracker} on DEBUG.
  *
- * Spring Boot Actuator picks up the camundaTaskExecutor bean automatically
- * (TaskExecutorMetricsAutoConfiguration) and exposes
- * executor.active / executor.queued / executor.pool.* on
- * /actuator/prometheus, so no separate MeterBinder needed.
- *
- * Pool/queue sizes come from camunda.bpm.job-execution.* properties.
+ * Pool/queue sizes are read from camunda.bpm.job-execution.* (same
+ * properties the starter would honour).
  */
 @Configuration
 public class JobMonitoring {
@@ -50,20 +44,20 @@ public class JobMonitoring {
   @Value("${camunda.bpm.job-execution.lock-time-in-millis:300000}") private int lockMs;
 
   @Bean(name = "camundaTaskExecutor", destroyMethod = "shutdown")
-  public InstrumentedTaskExecutor camundaTaskExecutor() {
-    InstrumentedTaskExecutor te = new InstrumentedTaskExecutor();
+  public ThreadPoolTaskExecutor camundaTaskExecutor() {
+    ThreadPoolTaskExecutor te = new ThreadPoolTaskExecutor();
     te.setCorePoolSize(corePoolSize);
     te.setMaxPoolSize(maxPoolSize);
     te.setQueueCapacity(queueCapacity);
     te.setThreadNamePrefix("jobExecutor-");
-    te.setRejectedExecutionHandler(new AbortPolicy());   // SpringJobExecutor expects the exception
+    te.setRejectedExecutionHandler(new AbortPolicy()); // SpringJobExecutor expects the exception
     te.initialize();
     return te;
   }
 
   @Bean
-  public JobExecutor jobExecutor(InstrumentedTaskExecutor te) {
-    InstrumentedSpringJobExecutor je = new InstrumentedSpringJobExecutor();
+  public JobExecutor jobExecutor(ThreadPoolTaskExecutor te) {
+    SpringJobExecutor je = new SpringJobExecutor();
     je.setTaskExecutor(te);
     je.setRejectedJobsHandler(new LoggingRejectedJobsHandler(te));
     je.setMaxJobsPerAcquisition(maxJobsPerAcq);
@@ -74,94 +68,33 @@ public class JobMonitoring {
 
   // ---------------------------------------------------------------------------
 
-  public static class InstrumentedTaskExecutor extends ThreadPoolTaskExecutor {
-    private final AtomicInteger queueHwm = new AtomicInteger();
-    private final AtomicInteger activeHwm = new AtomicInteger();
-    private final AtomicLong rejected = new AtomicLong();
-
-    @Override public void execute(Runnable task) {
-      queueHwm.accumulateAndGet(getQueueSize(), Math::max);
-      activeHwm.accumulateAndGet(getActiveCount(), Math::max);
-      try { super.execute(task); }
-      catch (RuntimeException e) { rejected.incrementAndGet(); throw e; }
-    }
-    public int getQueueSize()      { var q = q(); return q == null ? 0 : q.size(); }
-    public int getQueueRemaining() { var q = q(); return q == null ? 0 : q.remainingCapacity(); }
-    public int getActiveCount()    { var t = getThreadPoolExecutor(); return t == null ? 0 : t.getActiveCount(); }
-    public int getPoolSize()       { var t = getThreadPoolExecutor(); return t == null ? 0 : t.getPoolSize(); }
-    public int getQueueHwm()       { return queueHwm.get(); }
-    public int getActiveHwm()      { return activeHwm.get(); }
-    public long getRejected()      { return rejected.get(); }
-    private BlockingQueue<Runnable> q() { var t = getThreadPoolExecutor(); return t == null ? null : t.getQueue(); }
-  }
-
-  // ---------------------------------------------------------------------------
-
-  public static class InstrumentedSpringJobExecutor extends SpringJobExecutor {
-    private static final Logger LOG = LoggerFactory.getLogger(InstrumentedSpringJobExecutor.class);
-
-    @Override
-    public void executeJobs(List<String> jobIds, ProcessEngineImpl engine) {
-      String batchId = Integer.toHexString(System.identityHashCode(jobIds));
-      long submitted = System.currentTimeMillis();
-      Runnable original = getExecuteJobsRunnable(jobIds, engine);
-      Runnable wrapped = () -> {
-        MDC.put("batchId", batchId);
-        long t0 = System.currentTimeMillis();
-        LOG.info("BATCH START     batchId={} jobs={} thread={} waitMs={}",
-            batchId, jobIds.size(), Thread.currentThread().getName(), t0 - submitted);
-        try {
-          original.run();
-          LOG.info("BATCH DONE      batchId={} jobs={} thread={} execMs={}",
-              batchId, jobIds.size(), Thread.currentThread().getName(),
-              System.currentTimeMillis() - t0);
-        } catch (Throwable t) {
-          LOG.error("BATCH FAILED    batchId={} jobs={} execMs={} cause={}",
-              batchId, jobIds.size(), System.currentTimeMillis() - t0, t.toString(), t);
-          throw t;
-        } finally { MDC.remove("batchId"); }
-      };
-      try {
-        LOG.info("BATCH SUBMITTED batchId={} jobs={} jobIds={}", batchId, jobIds.size(), jobIds);
-        getTaskExecutor().execute(wrapped);
-      } catch (RejectedExecutionException rex) {
-        LOG.error("BATCH REJECTED  batchId={} jobs={} reason={}", batchId, jobIds, rex.toString());
-        getRejectedJobsHandler().jobsRejected(jobIds, engine, this);
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-
   public static class LoggingRejectedJobsHandler implements RejectedJobsHandler {
     private static final Logger LOG = LoggerFactory.getLogger(LoggingRejectedJobsHandler.class);
-    private final InstrumentedTaskExecutor te;
+    private final ThreadPoolTaskExecutor te;
     private final AtomicLong totalRejected = new AtomicLong();
 
-    public LoggingRejectedJobsHandler(InstrumentedTaskExecutor te) { this.te = te; }
+    public LoggingRejectedJobsHandler(ThreadPoolTaskExecutor te) { this.te = te; }
+    public long getTotalRejected() { return totalRejected.get(); }
 
     @Override
     public void jobsRejected(List<String> jobIds, ProcessEngineImpl engine, JobExecutor je) {
       totalRejected.addAndGet(jobIds.size());
+      ThreadPoolExecutor tpe = te.getThreadPoolExecutor();
       LOG.error("""
           JOBEXECUTOR QUEUE OVERFLOW
             jobIds          : {}
             totalRejected   : {}
             pool            : core={} active={} max={}
             queue           : {}/{} (remaining {})
-            highWater       : queue={} active={}
-            jdk-rejections  : {}
           Currently running (thread -> activity/PI):
           {}""",
           jobIds, totalRejected.get(),
-          te.getCorePoolSize(), te.getActiveCount(), te.getMaxPoolSize(),
-          te.getQueueSize(), te.getQueueCapacity(), te.getQueueRemaining(),
-          te.getQueueHwm(), te.getActiveHwm(),
-          te.getRejected(),
-          ActivityTracker.currentlyRunning());
+          te.getCorePoolSize(), tpe.getActiveCount(), te.getMaxPoolSize(),
+          tpe.getQueue().size(), te.getQueueCapacity(), tpe.getQueue().remainingCapacity(),
+          ActivityTracker.formatRunning());
 
-      // Unlock so the next acquisition cycle retries them — same as the
-      // default NotifyAcquisitionRejectedJobsHandler does.
+      // Unlock the rejected jobs so the next acquisition cycle picks them up
+      // (same behaviour as the default NotifyAcquisitionRejectedJobsHandler).
       var cmdExec = engine.getProcessEngineConfiguration().getCommandExecutorTxRequiresNew();
       for (String id : jobIds) {
         try { cmdExec.execute(new UnlockJobCmd(id)); }

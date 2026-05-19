@@ -1,5 +1,8 @@
 package org.cibseven.getstarted.jobmonitor;
 
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.cibseven.bpm.engine.impl.context.Context;
@@ -17,21 +20,25 @@ import org.springframework.stereotype.Component;
  * the cibseven Spring Boot starter publishes (its {@code EventPublisherPlugin}
  * is auto-registered, defaults are all on).
  *
- * Per activity boundary we:
- *   - log {@code ACTIVITY START/END} with job, pi, activity, thread, durationMs,
- *   - update SLF4J MDC so any delegate log line gets the context for free,
- *   - keep a static "thread name -> {job, pi, activity, startedAt}" map that
- *     {@link JobMonitoring.LoggingRejectedJobsHandler} reads when it prints
- *     the overflow diagnostic block.
+ * Behaviour on the {@code org.cibseven.getstarted.jobmonitor} logger:
+ *   DEBUG — per-activity {@code ACTIVITY START/END} plus the full
+ *           "Currently running" snapshot after each event.
+ *   INFO  — silent. The overflow diagnostic (LOG.error in
+ *           {@link JobMonitoring.LoggingRejectedJobsHandler}) still fires.
  *
- * The static map is a pragmatic shortcut — fine for a sample. In a larger
- * codebase you'd inject this @Component into the handler instead.
+ * The internal {@link Running} records back both the log output and
+ * {@link JobExecutorEndpoint} (/actuator/jobexecutor).
  */
 @Component
 public class ActivityTracker {
 
   private static final Logger LOG = LoggerFactory.getLogger(ActivityTracker.class);
-  private static final Map<String, String> CURRENT = new ConcurrentHashMap<>();
+  private static final Map<String, Running> CURRENT = new ConcurrentHashMap<>();
+
+  public record Running(String thread, String jobId, String processInstanceId,
+                        String activity, long startedAtMs) {
+    public long ageMs() { return System.currentTimeMillis() - startedAtMs; }
+  }
 
   @EventListener
   public void onActivity(ExecutionEvent e) {
@@ -44,24 +51,22 @@ public class ActivityTracker {
       String jobId = job == null ? null : job.getId();
       String pi = e.getProcessInstanceId();
       String act = e.getCurrentActivityId();
-      CURRENT.put(thread, String.format("job=%s pi=%s activity=%s startedAt=%d",
-          jobId, pi, act, System.currentTimeMillis()));
+      CURRENT.put(thread, new Running(thread, jobId, pi, act, System.currentTimeMillis()));
       if (jobId != null) MDC.put("jobId", jobId);
       MDC.put("processInstanceId", pi);
       MDC.put("activityId", act);
       if (LOG.isDebugEnabled()) {
         LOG.debug("ACTIVITY START  job={} pi={} activity={} thread={}", jobId, pi, act, thread);
-        LOG.debug("Currently running ({}):\n{}", CURRENT.size(), currentlyRunning());
+        LOG.debug("Currently running ({}):\n{}", CURRENT.size(), formatRunning());
       }
 
     } else if ("end".equals(event)) {
-      String prev = CURRENT.remove(thread);
-      long startedAt = parseStartedAt(prev);
+      Running prev = CURRENT.remove(thread);
+      long dur = prev == null ? 0 : prev.ageMs();
       if (LOG.isDebugEnabled()) {
         LOG.debug("ACTIVITY END    pi={} activity={} thread={} durationMs={}",
-            e.getProcessInstanceId(), e.getCurrentActivityId(), thread,
-            System.currentTimeMillis() - startedAt);
-        LOG.debug("Currently running ({}):\n{}", CURRENT.size(), currentlyRunning());
+            e.getProcessInstanceId(), e.getCurrentActivityId(), thread, dur);
+        LOG.debug("Currently running ({}):\n{}", CURRENT.size(), formatRunning());
       }
       MDC.remove("jobId");
       MDC.remove("processInstanceId");
@@ -69,26 +74,30 @@ public class ActivityTracker {
     }
   }
 
-  /** Rendered into the JOBEXECUTOR QUEUE OVERFLOW log block. */
-  public static String currentlyRunning() {
+  /** Rendered into the overflow block (multi-line string). */
+  public static String formatRunning() {
     if (CURRENT.isEmpty()) return "  (idle)";
     StringBuilder sb = new StringBuilder();
-    long now = System.currentTimeMillis();
-    CURRENT.forEach((thread, ctx) -> {
-      long started = parseStartedAt(ctx);
-      int cut = ctx.lastIndexOf("startedAt=");
-      sb.append("  - ").append(thread).append("  ")
-        .append(cut < 0 ? ctx : ctx.substring(0, cut))
-        .append("ageMs=").append(now - started).append('\n');
-    });
+    CURRENT.values().forEach(r -> sb.append(String.format(
+        "  - %s  job=%s pi=%s activity=%s ageMs=%d%n",
+        r.thread(), r.jobId(), r.processInstanceId(), r.activity(), r.ageMs())));
     return sb.toString();
   }
 
-  private static long parseStartedAt(String ctx) {
-    if (ctx == null) return System.currentTimeMillis();
-    int i = ctx.lastIndexOf("startedAt=");
-    if (i < 0) return System.currentTimeMillis();
-    try { return Long.parseLong(ctx.substring(i + "startedAt=".length())); }
-    catch (NumberFormatException e) { return System.currentTimeMillis(); }
+  /** JSON-friendly snapshot used by {@link JobExecutorEndpoint}. */
+  public static List<Map<String, Object>> running() {
+    long now = System.currentTimeMillis();
+    return CURRENT.values().stream().<Map<String, Object>>map(r -> {
+      var m = new LinkedHashMap<String, Object>();
+      m.put("thread", r.thread());
+      m.put("jobId", r.jobId());
+      m.put("processInstanceId", r.processInstanceId());
+      m.put("activity", r.activity());
+      m.put("startedAt", r.startedAtMs());
+      m.put("ageMs", now - r.startedAtMs());
+      return m;
+    }).toList();
   }
+
+  public static Collection<Running> raw() { return CURRENT.values(); }
 }

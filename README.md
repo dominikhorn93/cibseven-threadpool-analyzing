@@ -60,42 +60,44 @@ the matching `END` is your hanger.
 > `application.yaml`). In production raise it to `INFO` and this channel
 > goes silent — the overflow diagnostic (ERROR) still fires.
 
-**2. Every job batch logs its lifecycle through the TaskExecutor:**
-
-```
-BATCH SUBMITTED batchId=12ab jobs=3 jobIds=[8af43062-…, 8af43063-…, 8af43064-…]
-BATCH START     batchId=12ab jobs=3 thread=jobExecutor-1 waitMs=4
-BATCH DONE      batchId=12ab jobs=3 thread=jobExecutor-1 execMs=6012
-```
-
-→ Compare `waitMs` (time spent in the Spring queue) with `execMs`. A
-big `waitMs` means workers are slower than acquisition pushes.
-
-**3. On every queue overflow, a full diagnostic block:**
+**2. On every queue overflow, a full diagnostic block (ERROR):**
 
 ```
 JOBEXECUTOR QUEUE OVERFLOW
-  jobIds          : [8af43062-…]
+  jobIds          : [052c977f-…]
   totalRejected   : 1
   pool            : core=3 active=3 max=3
   queue           : 5/5 (remaining 0)
-  highWater       : queue=5 active=3
-  jdk-rejections  : 1
 Currently running (thread -> activity/PI):
-  - jobExecutor-1  job=8aee8adf-… pi=8aebf2cb-… activity=prepare ageMs=24
-  - jobExecutor-2  job=8aefc365-… pi=8aef7541-… activity=prepare ageMs=24
-  - jobExecutor-3  job=8af05fab-… pi=8af03897-… activity=prepare ageMs=18
+  - jobExecutor-1  job=0528046c-… pi=0525ba78-… activity=prepare ageMs=22
+  - jobExecutor-2  job=052914e2-… pi=0528c7be-… activity=prepare ageMs=22
+  - jobExecutor-3  job=0529b129-… pi=05296304-… activity=prepare ageMs=19
 ```
 
-→ The `Currently running` table identifies the bottleneck activity at
-the moment of rejection. Rejected jobs are auto-unlocked for the next
-acquisition cycle.
+→ Identifies the bottleneck activity at the moment of rejection.
+Rejected jobs are auto-unlocked for the next acquisition cycle.
 
-**4. Pool / queue metrics for Prometheus:**
+**3. On-demand live snapshot via Actuator:**
 
 ```bash
-curl -s http://localhost:8080/actuator/prometheus | grep '^executor_'
+curl -s http://localhost:8080/actuator/jobexecutor | jq .
 ```
+
+```json
+{
+  "pool":    { "active": 3, "size": 3, "core": 3, "max": 3, "completed": 0 },
+  "queue":   { "size": 5, "capacity": 5, "remaining": 0 },
+  "running": [
+    { "thread": "jobExecutor-1", "jobId": "0528046c-…", "processInstanceId": "0525ba78-…", "activity": "prepare", "ageMs": 1049 },
+    { "thread": "jobExecutor-2", "jobId": "052914e2-…", "processInstanceId": "0528c7be-…", "activity": "prepare", "ageMs": 1049 },
+    { "thread": "jobExecutor-3", "jobId": "0529b129-…", "processInstanceId": "05296304-…", "activity": "prepare", "ageMs": 1046 }
+  ]
+}
+```
+
+→ Poll this from a script / dashboard at any time without grepping logs.
+
+**4. Pool / queue metrics for Prometheus (auto-bound by Spring Actuator):**
 
 ```
 executor_active_threads{name="camundaTaskExecutor"}          3.0
@@ -104,23 +106,24 @@ executor_queue_remaining_tasks{name="camundaTaskExecutor"}   0.0
 executor_pool_size_threads{name="camundaTaskExecutor"}       3.0
 ```
 
-→ Auto-bound by Spring Actuator; no custom MeterBinder needed.
-
 ## Files
 
 ```
 src/main/java/org/cibseven/getstarted/jobmonitor/
-├── JobMonitoring.java          @Configuration + TaskExecutor +
-│                               SpringJobExecutor + RejectedJobsHandler
+├── JobMonitoring.java          @Configuration: plain ThreadPoolTaskExecutor
+│                               + plain SpringJobExecutor with our
+│                               LoggingRejectedJobsHandler
 ├── ActivityTracker.java        @EventListener(ExecutionEvent) — picks
 │                               up the events the starter's
 │                               EventPublisherPlugin already publishes
+├── JobExecutorEndpoint.java    @Endpoint(id="jobexecutor") — live
+│                               JSON snapshot of pool/queue/running
 └── JobMonitorApplication.java  boot main, SlowDelegate, /demo/overflow
 ```
 
 ## Use it in your own project
 
-Copy the three files; the `@Configuration` overrides the cibseven
+Copy the four files; the `@Configuration` overrides the cibseven
 starter's `camundaTaskExecutor` and `jobExecutor` beans (both
 `@ConditionalOnMissingBean`), so wiring is automatic. The logback
 pattern in `logback-spring.xml` renders the MDC keys — pick it up
